@@ -1,0 +1,162 @@
+---
+title: "Association Rule Mining for Online Retail Consumers"
+author: "Julian Cuero"
+date: "19/1/2021"
+output: html_document
+---
+
+## Background
+The Online Retail II data set contains all the transactions occurring for a UK-based and registered, non-store online retail between December 1, 2009 and December 9, 2011. The company mainly sells unique all-occasion gift-ware. Many customers of the firm are wholesalers.
+
+
+* The data set used here can be downloaded from this [link](https://archive.ics.uci.edu/ml/machine-learning-databases/00502/online_retail_II.xlsx).
+* The goal of this project is to study the consumer behavior of a retailer customers.
+
+***
+
+<h3 style='color:#d89216'>Setting up packages</h3>
+```{r warning=FALSE, message=FALSE}
+library(arules) # Apriori and Eclat algorithms
+library(readxl) # Read excel
+library(arulesViz) # Association rules visualization
+library(dplyr) # Data manipulation
+library(stringr) # String processing
+```
+
+***
+
+## Getting and preprocessing data
+
+Just get observations from 2010 and 2011 since there are too many.
+```{r cache=TRUE}
+dat <- read_excel("online_retail_II.xlsx",
+                  sheet='Year 2010-2011',
+                  guess_max = 100,
+                  range = cell_cols("A:C"),
+				  col_types = c("text", "text", "text")	
+)
+```
+
+* Only select the `Invoice` and `Description` columns, this is the basket info needed. Remove invoices that start with the letter 'c', which indicates a cancellation. We're only interested in purchases transactions 
+* Removed leading and trailing spaces and also reduced repeated white space inside a string.
+```{r}
+dat <- select(dat, Invoice, Description) %>%
+    filter(Description != "",
+           Description != "Discount",
+           !grepl("^C", Invoice, ignore.case = TRUE)) %>%
+    mutate(Description = tolower(str_squish(Description)))
+```
+
+Remove some punctuation
+```{r}
+dat <- mutate(dat, Description = str_remove_all(Description, "'|\\.|,"))
+```
+
+Write csv so it's easier to read with `read.transactions`
+```{r}
+write.csv(dat, file="dat.csv", row.names=FALSE)
+```
+
+**Convert data frame to transactions format**.
+```{r cache=TRUE}
+tr <- read.transactions("dat.csv", format = "single", sep=",",
+                        rm.duplicates=TRUE, header=TRUE, cols=1:2)
+```
+
+**Since many customers are wholesalers is expected to see plenty of baskets that contain at least 100 items**.
+```{r}
+summary(tr)
+```
+
+**Plot of the most frequently bought items**
+```{r fig.align='center'}
+itemFrequencyPlot(tr, topN=10, cex=0.7)
+```
+
+**There are just 6 items that have a support (relative frequency) of at least 7%**. Perhaps this is because the company offers a pretty wide range of products, as these are unique all-occasion gifts.
+```{r fig.align='center'}
+itemFrequencyPlot(tr, support=0.07, cex=0.8)
+```
+
+***
+
+## Running apriori algorithm
+
+* **Support**: It's the probability of an specific event, in this case, it's the proportion of times a specific item appears compared to the total number of transactions. In this online retail data, the basket rules support is somewhat low, with a maximum support a little greater than 4%.
+
+* **Confidence**: Confidence level of two events that occur simultaneously. It is defined as ***$conf(X \cup Y)=supp(X \cup Y)/supp(X)$***. For example, in this data set, the rule *{childrens cutlery dolly girl} => {childrens cutlery spaceboy}* has a confidence close to 76%. This means that **for 76% of the "childrens cutlery dolly girl" transactions this rule is correct**. Confidence can be interpreted as an estimate of the 
+conditional probability **$P(Y \mid X)$**, the probability of finding the RHS of the rule in transactions under the condition that these transactions also contain the LHS.
+
+* **Lift**: It's defined as ***$lift(X \cup Y)=supp(X \cup Y)/(supp(X)supp(Y))$***. It can be interpreted as the deviation of the support of the whole rule from the support expected under independence given the supports of the LHS and the RHS. It helps to filter or rank found rules. **Greater lift values indicate stronger associations** (greater dependence among items in the rule).
+
+
+Setting a support that isn't two high (there were only two items with a support above 10%) but also not too low because we want items that often bought. In this case
+**a support of 1% and a confidence of 30% were chosen** because association rules must satisfy both a minimum support and a minimum confidence constraint at the same time. Having that said, the **algorithm developed 1381 rules** that passed both support and confidence minimum requirements.
+```{r}
+rules <- apriori(tr, parameter=list(support=0.01, confidence=0.3, target="rules"))
+```
+
+**Basket rules summary**
+```{r}
+summary(rules)
+```
+
+**Basket rules of size equal to 2**
+```{r warning=FALSE, message=FALSE}
+inspect(head(subset(rules, size(rules) == 2), 10))
+```
+
+**Basket rules of size greater than 3**
+```{r warning=FALSE}
+inspect(head(subset(rules, size(rules) > 3), 10))
+```
+
+Taking a look at the **top 11 rules by lift**
+```{r}
+inspect(sort(rules, by='lift', decreasing=TRUE)[1:11])
+```
+
+**Checking the rules that have the product with highest support** (white hanging heart t-light holder in the right hand side) at the right hand side (rhs)
+```{r}
+heart.rhs <- subset(rules, subset = rhs %in% 'white hanging heart t-light holder')
+inspect(heart.rhs)
+```
+
+<h3 style='color:#d89216'>Visualizing rules</h3> 
+```{r warning=FALSE, message=FALSE}
+plot(rules)
+```
+
+**Graph visualization** for small subsets of rules, in this case, the top 11 with the highest lift.
+```{r}
+plot(sort(rules, by='lift', decreasing=TRUE)[1:11], method='graph')
+```
+
+***
+
+## Running eclat algorithm
+As opposed to apriori, eclat just measures a set support not an item support. It only requires the support level. There is no confidence or lift involved. **Here the algorithm outputs subsets, not rules**.
+
+Performing eclat with a minimum subset length of 2.
+```{r}
+eclat_sets <- eclat(tr, parameter=list(support=0.01, minlen = 2))
+```
+
+**There were 971 subsets** (or itemsets) that satisfied a minimum support of 10%.
+```{r}
+summary(eclat_sets)
+```
+
+<h3 style='color:#d89216'>Sets with the highest support</h3> 
+**The most frequent combination** among all the transactions was **jumbo bag pink polkadot and jumbo bag red retrospot**, with a support of `r 825 / 20610`.
+```{r}
+inspect(sort(eclat_sets, by='support', descending=TRUE)[1:9])
+```
+
+**Sets graph**
+```{r}
+plot(sort(eclat_sets, by='support', decreasing=TRUE)[1:10], method='graph')
+```
+
+#### **Reference**
+Chen, D. Sain, S.L., and Guo, K. (2012). *Data mining for the online retail industry: A case study of RFM model-based customer segmentation using data mining*. Journal of Database Marketing and Customer Strategy Management, Vol. 19, No. 3, pp. 197-208. doi: [Web Link](https://link.springer.com/article/10.1057/dbm.2012.17).
